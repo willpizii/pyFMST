@@ -22,12 +22,11 @@ def deploy_file(file_path: str, target_path: str):
     # Copy the file to the target location
     shutil.copy(file_path, target_path)
 
-def create_file_from_template(target_path: str, template_file: str):
+def create_file_from_template(target_path: str, template_dir:str, template_file: str):
 
-    template_file = os.path.join(os.path.dirname(__file__), '..', 'templates',template_file)
+    template_file = os.path.join(template_dir ,template_file)
     
     deploy_file(template_file, target_path)
-
 
 def read_grid_file(file_path: str):
     grid_data = []
@@ -54,7 +53,7 @@ def read_grid_file(file_path: str):
 
     return grid_basis, grid_step, grid_array
 
-def process_file(file_path, block_spec, block_start, update_params=None):
+def process_file(file_path, block_start, block_spec, update_params=None):
     """
     Generic function to read, update, and overwrite parameter blocks in a file.
 

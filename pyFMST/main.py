@@ -6,13 +6,16 @@ import glob
 import os
 from obspy import read_inventory
 import pygmt
+import shutil
+import json
 
-from fmstUtils import fmstUtils, genUtils
+from pyFMST.fmstUtils import fmstUtils, genUtils
 
 class fmst:
 
     def __init__(self,
-                 path: str):
+                 path: str,
+                 templates: str):
         """
         Initiliazes the fmst class
 
@@ -25,6 +28,11 @@ class fmst:
         genUtils.check_file_exists(path)
 
         self.path = path
+
+        genUtils.check_file_exists(templates)
+
+        self.templates_dir = templates
+        
         self.initial_velocity = None
         self.region = None
 
@@ -38,7 +46,7 @@ class fmst:
             if not os.path.exists(self.__mkmodel_dir):
                 os.makedirs(self.__mkmodel_dir)
 
-            fmstUtils.create_file_from_template(self.__grid_path, 'grid2dss.in')
+            fmstUtils.create_file_from_template(self.__grid_path, self.templates_dir, 'grid2dss.in')
 
     def set_background_vel(self, v):
         """
@@ -147,13 +155,14 @@ class fmst:
 
         genUtils.check_file_exists(station_path)
         
-        __ext = os.path.splitext(station_path)
+        __ext = os.path.splitext(station_path)[-1]
         __sta_cols = ['network','station','lat','lon','elev']
+        __stadf = pd.DataFrame(columns = __sta_cols)
         
         if __ext == '.xml':
             __inv = read_inventory(station_path)
 
-            for network in inv:
+            for network in __inv:
                 for station in network:
                     __stadf = pd.concat([__stadf, pd.DataFrame(
                         [[network.code,
@@ -175,16 +184,17 @@ class fmst:
         self.stations = __stadf
 
     def load_velocity_pairs(self,
-                            velocity_pairs: str):
+                            velocity_pairs_path: str,
+                            phase_vel: float):
         
-        genUtils.check_file_exists(velocity_pairs)
+        genUtils.check_file_exists(velocity_pairs_path)
         
-        __ext = os.path.splitext(velocity_pairs)
+        __ext = os.path.splitext(velocity_pairs_path)[-1]
         
         if __ext != '.json':
             raise ValueError("Only json paired velocity inputs are supported!")
 
-        with open(phase_vel_path, 'r') as file:
+        with open(velocity_pairs_path, 'r') as file:
             data = json.load(file)
         
         self.velocity_pairs = {}
@@ -204,7 +214,7 @@ class fmst:
     
         __sta_pairs['vel'] = None
         
-        for item, value in vels.items():
+        for item, value in self.velocity_pairs.items():
             sta1 = item.split("_")[1]
             sta2 = item.split("_")[-1]
         
@@ -240,13 +250,15 @@ class fmst:
 
     def remove_unused_stations(self):
 
-        __used_stations = list(pd.unique(self.station_pairs[['col1', 'col2']].values.ravel()))
+        __used_stations = list(pd.unique(self.station_pairs[['loc1', 'loc2']].values.ravel()))
 
         __orig_stations = len(self.stations)
 
-        self.stations = self.stations[self.stations['sta'].isin(__used_stations)]
+        self.stations = self.stations[self.stations.index.isin(__used_stations)]
+        self.stations.reset_index(drop=True, inplace=True)
 
         print("Removed", __orig_stations - len(self.stations), "unused stations!")
+        print("If stations have been removed, call read_station_pairs again or indices will be wrong!")
 
     def create_sources(self):
 
@@ -254,7 +266,7 @@ class fmst:
 
         self.station_count = int(len(__sources))
 
-        sdf.to_csv(os.path.join(self.path,'sources.dat'), sep=r" ", header=None, index=False)
+        __sources.to_csv(os.path.join(self.path,'sources.dat'), sep=r" ", header=None, index=False)
         
         with open(os.path.join(self.path,'sources.dat'), 'r') as file:
             lines = file.readlines()
@@ -264,7 +276,7 @@ class fmst:
         with open(os.path.join(self.path,'sources.dat'), 'w') as file:
             file.writelines(lines)
         
-        sdf.to_csv(os.path.join(self.path,'receivers.dat'), sep=r" ", header=None, index=False)
+        __sources.to_csv(os.path.join(self.path,'receivers.dat'), sep=r" ", header=None, index=False)
         
         with open(os.path.join(self.path,'receivers.dat'), 'r') as file:
             lines = file.readlines()
@@ -338,7 +350,7 @@ class fmst:
             __config_files = ['fm2dss.in', 'ttomoss.in', 'misfitss.in', 'subinvss.in', 'subiter.in', 'residualss.in']
             
             for _ in __config_files:
-                fmstUtils.create_file_from_template(os.path.join(self.path, _), _)
+                fmstUtils.create_file_from_template(os.path.join(self.path, _),self.templates_dir, _)
 
         if subiter:
             with open(os.path.join(self.path, 'subiter.in'), 'w') as file:
@@ -385,14 +397,14 @@ class fmst:
             os.makedirs(os.path.join(self.path, 'gmtplot'))
 
         if not os.path.exists(os.path.join(self.path, 'gmtplot', 'tslicess.in')):
-            fmstUtils.create_file_from_template(os.path.join(self.path, 'gmtplot', 'tslicess.in'), 'tslicess.in')
+            fmstUtils.create_file_from_template(os.path.join(self.path, 'gmtplot', 'tslicess.in'),self.templates_dir, 'tslicess.in')
 
-        _ = subprocess.run('tslicess', cwd=os.path.join(self.path, 'gmtplot', shell=True, check=True, capture_output=True, text=True)
+        _ = subprocess.run('tslicess', cwd=os.path.join(self.path, 'gmtplot'), shell=True, check=True, capture_output=True, text=True)
 
-       if verbose:
-           print(_.stdout)
+        if verbose:
+            print(_.stdout)
 
-   def load_result_grid(self):
+    def load_result_grid(self):
 
         with open(os.path.join(self.path, 'gmtplot', 'bound.gmt'), "r") as file:
             bounds = [float(line.strip()) for line in file]
@@ -402,10 +414,10 @@ class fmst:
             y_coords = np.arange(bounds[2], bounds[3] + bounds[5], bounds[5])
     
         else:
-            x_coords = np.arange(region[0], region[1], abs(region[0]-region[1])/bounds[4])
-            y_coords = np.arange(region[2], region[3], abs(region[2]-region[3])/bounds[5])
+            x_coords = np.arange(self.region[2], self.region[3], abs(self.region[2]-self.region[3])/bounds[4])
+            y_coords = np.arange(self.region[1], self.region[0], abs(self.region[1]-self.region[0])/bounds[5])
 
-        self.z_values = pd.read_csv(f"{ttomoss_path}gmtplot/grid2dv.z", header=None).values.flatten()
+        self.z_values = pd.read_csv(os.path.join(self.path,'gmtplot','grid2dv.z'), header=None).values.flatten()
 
         if len(self.z_values) != len(x_coords) * len(y_coords):
             raise ValueError(f"The number of Z values doesn't match the grid dimensions. {len(z_values)}, {len(x_coords) * len(y_coords)}")
@@ -429,11 +441,14 @@ class fmst:
                  projection: str='M15c',
                  plot_rays: bool=False,
                  plot_stations: bool=False,
-                 plot_caption: bool=False
+                 plot_caption: bool=False,
+                 save_fig: bool=False
                  ):
 
+        gmt_region = [self.region[2], self.region[3], self.region[1], self.region[0]]
+
         orig_grid = pygmt.xyz2grd(data=self.xyz_data,
-                                region=self.region,
+                                region=gmt_region,
                                 spacing=[self.bounds[6], self.bounds[7]],
                                 registration="pixel")
         
@@ -458,7 +473,7 @@ class fmst:
         
         fig.grdimage(
             grid=orig_grid,  # Input grid
-            region=region,
+            region=gmt_region,
             projection=projection,  # Mercator projection (6 inches wide)
             cmap= cpt,           # f"{ttomoss_path}gmtplot/velgradabs1.cpt",  # Color palette
             frame=True,  # Frame with ticks
@@ -473,7 +488,7 @@ class fmst:
     
             fig.plot(
                 data=receivers,          
-                region=region,                 # Map boundaries (equivalent to $bounds)
+                region=gmt_region,                 # Map boundaries (equivalent to $bounds)
                 projection=projection,               # Map projection (equivalent to $proj)
                 style="t0.3c",
                 fill="white",
@@ -493,7 +508,7 @@ class fmst:
         if plot_rays:
             fig.plot(
                 data=f"{ttomoss_path}gmtplot/rays.dat",          # Input data file
-                region=region,            # Map boundaries (equivalent to $bounds)
+                region=gmt_region,            # Map boundaries (equivalent to $bounds)
                 projection=projection,          # Map projection (equivalent to $proj)
                 pen="0.5p",               # Line width of 0.5 points (equivalent to -W0.5)
             )
