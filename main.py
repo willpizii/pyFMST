@@ -48,21 +48,11 @@ class fmst:
                 If passed as a list or array, the mean value is taken
         """
         if isinstance(v, float):
-            bgvel = v
+            self.initial_velocity = v
         elif isinstance(v, list) or isinstance(v, np.array):
-            bgvel = np.mean(v)
+            self.initial_velocity = np.mean(v)
         else:
-            raise TypeError(f"v expected as float, list or nparray, but found {type(v)}")
-
-        with open(self.__grid_path, 'r') as infile:
-            lines = infile.readlines()
-
-        lines[14] = f'{round(bgvel, 3):<24} c: Background velocity\n'
-
-        with open(self.__grid_path, 'w') as outfile:
-            outfile.writelines(lines)
-
-        self.initial_velocity = bgvel
+            raise TypeError(f"v expected as float, list or np.array, but found {type(v)}")
 
 
     def config_grid(self,
@@ -99,6 +89,8 @@ class fmst:
         with open(self.__grid_path, 'r') as infile:
             lines = infile.readlines()
 
+        lines[14] = f'{round(self.initial_velocity, 3):<24} c: Background velocity\n'
+
         lines[7] = f'{latgrid}                   c: Number of grid points in theta (N-S)\n'
         lines[8] = f'{longrid}                   c: Number of grid points in phi (E-W)\n'
 
@@ -134,7 +126,8 @@ class fmst:
 
         self.region = region
 
-    def create_grid(self):
+    def create_grid(self,
+                    copy_to_gridi: bool=True):
 
         subprocess.run('grid2dss', cwd=self.__mkmodel_dir, shell=True)
 
@@ -142,3 +135,8 @@ class fmst:
 
         _,self.grid_step, self.gridi = fmstUtils.read_grid_file(self.__grid_file_init)
 
+        if copy_to_gridi:
+
+            self.__gridi_file = os.path.join(self.path, 'gridi.vtx')
+
+            shutil.copy(self.__grid_file_init, self.__gridi_file)

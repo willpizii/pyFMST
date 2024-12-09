@@ -24,7 +24,7 @@ def deploy_file(file_path: str, target_path: str):
 
 def create_grid_cfg_file(target_path: str):
 
-    template_file = os.path.join(os.path.dirname(__file__), '../templates/grid2dss.in')
+    template_file = os.path.join(os.path.dirname(__file__), '..', 'templates','grid2dss.in')
     deploy_file(template_file, target_path)
 
 
