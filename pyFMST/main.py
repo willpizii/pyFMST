@@ -482,7 +482,7 @@ class fmst:
         )
 
         if plot_stations:
-            receivers = pd.read_csv(f"{ttomoss_path}gmtplot/receivers.dat", sep="\s+", header=None)
+            receivers = pd.read_csv(os.path.join(self.path,'gmtplot','receivers.dat'), sep="\s+", header=None)
             receivers = receivers[[1, 0]] # lat and lon are wrong way around!
     
     
@@ -507,7 +507,7 @@ class fmst:
 
         if plot_rays:
             fig.plot(
-                data=f"{ttomoss_path}gmtplot/rays.dat",          # Input data file
+                data=os.path.join(self.path,'gmtplot','rays.dat'),          # Input data file
                 region=gmt_region,            # Map boundaries (equivalent to $bounds)
                 projection=projection,          # Map projection (equivalent to $proj)
                 pen="0.5p",               # Line width of 0.5 points (equivalent to -W0.5)
