@@ -527,7 +527,7 @@ class fmst:
                  label_stations: bool=False,
                  plot_caption: bool=False,
                  save_fig: str=None
-                 ):
+                 show: bool=True):
 
         gmt_region = [self.region[2], self.region[3], self.region[1], self.region[0]]
 
@@ -656,8 +656,11 @@ class fmst:
         
         if save_fig:
             fig.savefig(save_fig, crop=True)
-        
-        fig.show()
+
+        if show:
+            fig.show()
+        else:
+            return fig
 
     def plot_hist(self,
                   use_model: bool=False,
