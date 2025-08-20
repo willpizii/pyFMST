@@ -16,7 +16,8 @@ from .fmstUtils import fmstUtils, genUtils
 class fmst:
     def __init__(self,
                  path: str,
-                 templates: str):
+                 templates: str,
+                 env=None):
         """
         Initiliazes the fmst class
 
@@ -40,7 +41,7 @@ class fmst:
 
         self.refined = False
 
-        self.refined = False
+        self.env = env
 
         # initiliase grid config file
 
@@ -150,7 +151,7 @@ class fmst:
     def create_grid(self,
                     copy_to_gridi: bool=True):
 
-        subprocess.run('grid2dss', cwd=self.__mkmodel_dir, shell=True)
+        subprocess.run('grid2dss', cwd=self.__mkmodel_dir, shell=True, env=self.env)
 
         self.__grid_file_init = os.path.join(self.path, 'mkmodel', 'grid2d.vtx')
 
@@ -454,7 +455,7 @@ class fmst:
                    verbose: bool=False,
                    overwrite: bool=True):
 
-        _ = subprocess.run('ttomoss', cwd=self.path, shell=True, check=True, capture_output=True, text=True)
+        _ = subprocess.run('ttomoss', cwd=self.path, shell=True, check=True, capture_output=True, text=True, env=self.env)
 
         if verbose:
             print(_.stdout)
@@ -479,7 +480,7 @@ class fmst:
         if not os.path.exists(os.path.join(self.path, 'gmtplot', 'tslicess.in')):
             fmstUtils.create_file_from_template(os.path.join(self.path, 'gmtplot', 'tslicess.in'),self.templates_dir, 'tslicess.in')
 
-        _ = subprocess.run('tslicess', cwd=os.path.join(self.path, 'gmtplot'), shell=True, check=True, capture_output=True, text=True)
+        _ = subprocess.run('tslicess', cwd=os.path.join(self.path, 'gmtplot'), shell=True, check=True, capture_output=True, text=True, env=self.env)
 
         if verbose:
             print(_.stdout, _.stderr)
@@ -835,7 +836,7 @@ class fmst:
             self.config_ttomoss(subinvss={factor:s}, ttomoss=str(iterations))
             result_t = self.run_ttomoss(overwrite = False)
 
-            result_m = subprocess.run('misfitss', cwd=self.path, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            result_m = subprocess.run('misfitss', cwd=self.path, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
                 
             # Check if the command executed successfully
             if result_m.returncode == 0:
