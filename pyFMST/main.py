@@ -526,7 +526,7 @@ class fmst:
                  plot_stations: bool=False,
                  label_stations: bool=False,
                  plot_caption: bool=False,
-                 save_fig: str=None
+                 save_fig: str=None,
                  show: bool=True):
 
         gmt_region = [self.region[2], self.region[3], self.region[1], self.region[0]]
