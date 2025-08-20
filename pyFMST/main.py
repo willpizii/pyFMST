@@ -11,7 +11,7 @@ import json
 from tqdm import tqdm
 import re
 
-from pyfmst.fmstUtils import fmstUtils, genUtils
+from pyFMST.fmstUtils import fmstUtils, genUtils
 
 class fmst:
 
