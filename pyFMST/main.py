@@ -34,10 +34,12 @@ class fmst:
         genUtils.check_file_exists(templates)
 
         self.templates_dir = templates
-        
+
         self.initial_velocity = None
         self.region = None
         self.otimes = None
+
+        self.refined = False
 
         self.refined = False
 
@@ -163,7 +165,7 @@ class fmst:
 
     def load_stations(self, station_path: str):
         genUtils.check_file_exists(station_path)
-        
+
         __ext = os.path.splitext(station_path)[-1]
         __sta_cols = ['network', 'station', 'lat', 'lon', 'elev']
         
@@ -203,19 +205,19 @@ class fmst:
     def load_velocity_pairs(self,
                             velocity_pairs_path: str,
                             phase_vel: float):
-        
+
         genUtils.check_file_exists(velocity_pairs_path)
-        
+
         __ext = os.path.splitext(velocity_pairs_path)[-1]
-        
+
         if __ext != '.json':
             raise ValueError("Only json paired velocity inputs are supported!")
 
         with open(velocity_pairs_path, 'r') as file:
             data = json.load(file)
-        
+
         self.velocity_pairs = {}
-        
+
         for item, value in data.items():
             if phase_vel in value[0]:
                 index_pf = value[0].index(phase_vel)
@@ -227,15 +229,15 @@ class fmst:
                            verbose: bool=False):
 
         __sta_pairs = pd.read_csv(station_pairs_path)
-    
+
         __sta_pairs['vel'] = None
 
         for item, value in self.velocity_pairs.items():
             sta1 = item.split("_")[1]
             sta2 = item.split("_")[-1]
-        
+
             __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'vel'] = value
-            __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc1'] = int(self.stations.index[self.stations['station'] == sta1].tolist()[0]) 
+            __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc1'] = int(self.stations.index[self.stations['station'] == sta1].tolist()[0])
             __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc2'] = int(self.stations.index[self.stations['station'] == sta2].tolist()[0])
 
         if drop:
@@ -319,22 +321,22 @@ class fmst:
         __sources = self.stations[['lat','lon']]
 
         __sources.to_csv(os.path.join(self.path,'sources.dat'), sep=r" ", header=None, index=False)
-        
+
         with open(os.path.join(self.path,'sources.dat'), 'r') as file:
             lines = file.readlines()
-        
+
         lines.insert(0, f"   {self.station_count}\n")
 
         with open(os.path.join(self.path,'sources.dat'), 'w') as file:
             file.writelines(lines)
-        
+
         __sources.to_csv(os.path.join(self.path,'receivers.dat'), sep=r" ", header=None, index=False)
-        
+
         with open(os.path.join(self.path,'receivers.dat'), 'r') as file:
             lines = file.readlines()
-        
+
         lines.insert(0, f"   {self.station_count}\n")
-        
+
         with open(os.path.join(self.path,'receivers.dat'), 'w') as file:
             file.writelines(lines)
 
@@ -375,9 +377,9 @@ class fmst:
         Configure TTOMOSS inversion files.
 
         If no configuration dict, or no argument within a dict, is passed, the value is unchanged.
-    
+
         Args:
-            init (bool): If True, creates configuration files from default templates. 
+            init (bool): If True, creates configuration files from default templates.
                          If False, will rewrite onto existing files
             fm2dss (dict): Parameters for the `fm2dss.in` file, must be passed in following format:
 
@@ -392,16 +394,16 @@ class fmst:
 
                              "dicing": (int, int),
                              "earth_radius":float
-                             
+
             subinvss (dict): Parameters for the `subinvss.in` file, must be passed in following format:
 
                             "damping":float,                    [epsilon]
-                            "subspace_dimension":int,            
+                            "subspace_dimension":int,
                             "2nd_derivative_smoothing":int,     [0=no, 1=yes]
                             "smoothing":float,                    [eta]
                             "latitude_account":int,             [0=no, 1=yes]
                             "frac_G_size": float
-                             
+
             subiter (int): Value to write to `subiter.in` file.
             ttomoss (int): Value to write to `ttomoss.in` file.
 
@@ -409,14 +411,14 @@ class fmst:
 
         if init:
             __config_files = ['fm2dss.in', 'ttomoss.in', 'misfitss.in', 'subinvss.in', 'subiter.in', 'residualss.in']
-            
+
             for _ in __config_files:
                 fmstUtils.create_file_from_template(os.path.join(self.path, _),self.templates_dir, _)
 
         if subiter:
             with open(os.path.join(self.path, 'subiter.in'), 'w') as file:
                 file.write(subiter)
-        
+
         if ttomoss:
             with open(os.path.join(self.path, 'ttomoss.in'), 'w') as file:
                 file.write(ttomoss)
@@ -487,11 +489,11 @@ class fmst:
 
         with open(os.path.join(self.path, 'gmtplot', 'bound.gmt'), "r") as file:
             bounds = [float(line.strip()) for line in file]
-    
-        if bounds[4] < 1:   
+
+        if bounds[4] < 1:
             x_coords = np.arange(bounds[0], bounds[1], bounds[4])
             y_coords = np.arange(bounds[2], bounds[3] + bounds[5], bounds[5])
-    
+
         else:
             x_coords = np.arange(self.region[2], self.region[3], abs(self.region[2]-self.region[3])/bounds[4])
             y_coords = np.arange(self.region[1], self.region[0], abs(self.region[1]-self.region[0])/bounds[5])
@@ -503,10 +505,10 @@ class fmst:
         
         # Create a 2D grid for X, Y, and Z
         z_grid = self.z_values.reshape((len(x_coords), len(y_coords))).T
-        
+
         # Create a mesh grid for X and Y coordinates
         x_grid, y_grid = np.meshgrid(x_coords, y_coords)
-        
+
         # Stack X, Y, and Z values into a single array for xyz2grd
         xyz_data = np.column_stack([x_grid.flatten(), y_grid.flatten(), z_grid.flatten()])
 
@@ -533,7 +535,7 @@ class fmst:
                                 region=gmt_region,
                                 spacing=[self.bounds[6], self.bounds[7]],
                                 registration="pixel")
-        
+
         fig = pygmt.Figure()
 
         if plot_tomo:
@@ -566,10 +568,10 @@ class fmst:
         if plot_stations:
             receivers = pd.read_csv(os.path.join(self.path,'gmtplot','receivers.dat'), sep="\s+", header=None)
             receivers = receivers[[1, 0]] # lat and lon are wrong way around!
-    
-    
+
+
             fig.plot(
-                data=receivers,          
+                data=receivers,
                 region=gmt_region,                 # Map boundaries (equivalent to $bounds)
                 projection=projection,               # Map projection (equivalent to $proj)
                 style="t0.3c",
