@@ -5,7 +5,7 @@ setup(
     version='0.0.1',
     description='Python translation layer for basic FMST functionality',
     author='Will Pizii',
-    packages=['pyFMST'],                      # root folder of your package
+    packages=find_packages(),                      # root folder of your package
     install_requires=[
         # List any dependencies here, e.g.,
         'numpy>=1.18',
