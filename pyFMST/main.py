@@ -565,7 +565,7 @@ class fmst:
             )
 
         if plot_stations:
-            receivers = pd.read_csv(os.path.join(self.path,'gmtplot','receivers.dat'), sep="\s+", header=None)
+            receivers = pd.read_csv(os.path.join(self.path,'gmtplot','receivers.dat'), sep=r"\s+", header=None)
             receivers = receivers[[1, 0]] # lat and lon are wrong way around!
 
 
