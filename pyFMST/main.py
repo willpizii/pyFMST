@@ -8,8 +8,10 @@ from obspy import read_inventory
 import pygmt
 import shutil
 import json
+from tqdm import tqdm
+import re
 
-from pyFMST.fmstUtils import fmstUtils, genUtils
+from pyfmst.fmstUtils import fmstUtils, genUtils
 
 class fmst:
 
@@ -35,6 +37,9 @@ class fmst:
         
         self.initial_velocity = None
         self.region = None
+        self.otimes = None
+
+        self.refined = False
 
         # initiliase grid config file
 
@@ -58,14 +63,27 @@ class fmst:
         """
         if isinstance(v, float):
             self.initial_velocity = v
-        elif isinstance(v, list) or isinstance(v, np.array):
+        elif isinstance(v, list) or isinstance(v, np.ndarray):
             self.initial_velocity = np.mean(v)
         else:
             raise TypeError(f"v expected as float, list or np.array, but found {type(v)}")
 
+    def set_region(self, region:list):
+        
+        """
+        Parameters:
+            region (list):       A list of floats or integers specifying the region boundaries.
+                                 The order should be: [max_latitude, min_latitude, min_longitude, max_longitude].
+        """
+
+        # Check region list validity
+
+        if not region[0] > region[1] or not region[2]<region[3] or len(region) != 4:
+            raise ValueError("Specified region is incorrectly formatted.")
+        
+        self.region = region
 
     def config_grid(self,
-                    region: list,
                     latgrid: int,
                     longrid: int,
                     noise: bool=False,
@@ -78,8 +96,6 @@ class fmst:
         Configures grid for FMST to create using the builtin script grid2dss.
 
         Parameters:
-            region (list):       A list of floats or integers specifying the region boundaries.
-                        The order should be: [max_latitude, min_latitude, min_longitude, max_longitude].
             latgrid (int):      The number of grid points in the north-south (N-S) direction.
             longrid (int):      The number of grid points in the east-west (E-W) direction.
             noise (bool):       Enables or disables grid noise. Defaults to False
@@ -92,9 +108,6 @@ class fmst:
         if not self.initial_velocity:
             raise RuntimeError("Background velocity must be set before creating a grid.")
 
-        if not all(isinstance(coord, (int, float)) for coord in region) or len(region) != 4:
-            raise ValueError("Region should be a list of four numeric values (e.g., [lat, lon]).")
-
         with open(self.__grid_path, 'r') as infile:
             lines = infile.readlines()
 
@@ -103,8 +116,8 @@ class fmst:
         lines[7] = f'{latgrid}                   c: Number of grid points in theta (N-S)\n'
         lines[8] = f'{longrid}                   c: Number of grid points in phi (E-W)\n'
 
-        lines[9] = f'{region[0]}  {region[1]}          c: N-S range of grid (degrees)\n'
-        lines[10] = f'{region[2]}  {region[3]}          c: E-W range of grid (degrees)\n'
+        lines[9] = f'{self.region[0]}  {self.region[1]}          c: N-S range of grid (degrees)\n'
+        lines[10] = f'{self.region[2]}  {self.region[3]}          c: E-W range of grid (degrees)\n'
 
 
         if noise and not noise_std:
@@ -133,8 +146,6 @@ class fmst:
         with open(self.__grid_path, 'w') as outfile:
             outfile.writelines(lines)
 
-        self.region = region
-
     def create_grid(self,
                     copy_to_gridi: bool=True):
 
@@ -150,38 +161,44 @@ class fmst:
 
             shutil.copy(self.__grid_file_init, self.__gridi_file)
 
-    def load_stations(self,
-                      station_path: str):
-
+    def load_stations(self, station_path: str):
         genUtils.check_file_exists(station_path)
         
         __ext = os.path.splitext(station_path)[-1]
-        __sta_cols = ['network','station','lat','lon','elev']
-        __stadf = pd.DataFrame(columns = __sta_cols)
+        __sta_cols = ['network', 'station', 'lat', 'lon', 'elev']
+        
+        # Initialize as an empty list to collect rows
+        rows = []
         
         if __ext == '.xml':
             __inv = read_inventory(station_path)
-
+    
             for network in __inv:
                 for station in network:
-                    __stadf = pd.concat([__stadf, pd.DataFrame(
-                        [[network.code,
-                        station.code,
-                        station.latitude,
-                        station.longitude,
-                        station.elevation]], columns=__sta_cols
-                    )], ignore_index=True)
-
+                    # Add rows to the list directly
+                    rows.append([network.code, station.code, station.latitude, station.longitude, station.elevation])
+    
         elif __ext == '.csv':
-            __stadf == pd.read_csv(station_path, usecols=__sta_cols)
-
+            __stadf = pd.read_csv(station_path, usecols=__sta_cols)
+            # Append rows to list from the CSV
+            rows.extend(__stadf.values.tolist())
+    
         else:
             raise ValueError("Supported formats are inventoryxml .xml and .csv!")
-                    
-        __stadf = __stadf[(__stadf['lon'] >= self.region[2]) & (__stadf['lon'] <= self.region[3]) &
-                         (__stadf['lat'] >= self.region[1]) & (__stadf['lat'] <= self.region[0])]
-
+        
+        # Convert the list of rows into a DataFrame
+        __stadf = pd.DataFrame(rows, columns=__sta_cols)
+        
+        # Filter based on region
+        __stadf = __stadf[(__stadf['lon'] >= self.region[2]) & 
+                          (__stadf['lon'] <= self.region[3]) &
+                          (__stadf['lat'] >= self.region[1]) & 
+                          (__stadf['lat'] <= self.region[0])]
+        
+        # Assign to self.stations after filtering
         self.stations = __stadf
+        self.station_count = int(len(self.stations))
+
 
     def load_velocity_pairs(self,
                             velocity_pairs_path: str,
@@ -206,14 +223,13 @@ class fmst:
 
     def read_station_pairs(self,
                            station_pairs_path: str,
-                           refine: bool=False,
-                           refine_method: str=None,
-                           refine_arg: float=None):
+                           drop: bool=False,
+                           verbose: bool=False):
 
         __sta_pairs = pd.read_csv(station_pairs_path)
     
         __sta_pairs['vel'] = None
-        
+
         for item, value in self.velocity_pairs.items():
             sta1 = item.split("_")[1]
             sta2 = item.split("_")[-1]
@@ -221,50 +237,86 @@ class fmst:
             __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'vel'] = value
             __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc1'] = int(self.stations.index[self.stations['station'] == sta1].tolist()[0]) 
             __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc2'] = int(self.stations.index[self.stations['station'] == sta2].tolist()[0])
+
+        if drop:
+            __used_stations = list(pd.unique(__sta_pairs[['loc1', 'loc2']].values.ravel()))
+
+            __orig_stations = len(self.stations)
+    
+            self.stations = self.stations[self.stations.index.isin(__used_stations)]
+            self.stations.reset_index(drop=True, inplace=True)
+            
+            self.station_count = int(len(self.stations))
+    
+            if verbose:
+                print("Removed", __orig_stations - len(self.stations), "unused stations!")
+            
+            for item, value in self.velocity_pairs.items():
+                sta1 = item.split("_")[1]
+                sta2 = item.split("_")[-1]
+            
+                __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'vel'] = value
+                __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc1'] = int(self.stations.index[self.stations['station'] == sta1].tolist()[0]) 
+                __sta_pairs.loc[(__sta_pairs['station1'] == sta1) & (__sta_pairs['station2'] == sta2), 'loc2'] = int(self.stations.index[self.stations['station'] == sta2].tolist()[0])
         
         __sta_pairs['gcm'] /= 1000 # converts from metres to kilometres
         
-        __sta_pairs['tt'] = __sta_pairs['gcm'] / __sta_pairs['vel']
+        __sta_pairs['tt'] = __sta_pairs['gcm'] / __sta_pairs['vel']        
 
-        __original_len = len(__sta_pairs)
+        __sta_pairs_clean = __sta_pairs.dropna(subset=['tt']).reset_index(drop=True)
+
+        self.station_pairs = __sta_pairs_clean[['loc1','loc2','tt']]
+
+        for idx, station in enumerate(zip(__sta_pairs_clean['station1'].tolist(), __sta_pairs_clean['station2'].tolist())):
+            __sta_pairs_clean.at[idx, 'lat1'] = self.stations[self.stations['station'] == station[0]]['lat'].values[0]
+            __sta_pairs_clean.at[idx, 'lat2'] = self.stations[self.stations['station'] == station[1]]['lat'].values[0]
+            __sta_pairs_clean.at[idx, 'lon1'] = self.stations[self.stations['station'] == station[0]]['lon'].values[0]
+            __sta_pairs_clean.at[idx, 'lon2'] = self.stations[self.stations['station'] == station[1]]['lon'].values[0]
+            
+        self.station_pairs_complete = __sta_pairs_clean
+
+    def refine_station_pairs(self,
+                           method: str=None,
+                           arg: float=None,
+                           verbose: bool=False):
+
+        
+        if not self.refined:
+            self.station_pairs_original = self.station_pairs_complete
+        
+        __sta_pairs = self.station_pairs_original.copy()
+
+        __original_len = len(__sta_pairs.dropna(subset='vel'))
     
-        if refine:
-            if refine_method == 'std':
-                __mean_vel = np.mean(__sta_pairs['vel'])
-                __std_vel = np.std(__sta_pairs['vel'])
-                
-                __sta_pairs = __sta_pairs[(__sta_pairs['vel'] >= mean_vel - refine_arg * std_vel) & (__sta_pairs['vel'] <= mean_vel + refine_arg * std_vel)]
+        if method == 'std':
+            __mean_vel = np.mean(__sta_pairs['vel'])
+            __std_vel = np.std(__sta_pairs['vel'])
+            
+            __sta_pairs = __sta_pairs[(__sta_pairs['vel'] >= __mean_vel - arg * __std_vel) & (__sta_pairs['vel'] <= __mean_vel + arg * __std_vel)]
 
-            elif refine_method == 'abs':
-                __lower_bound = np.percentile(__sta_pairs['vel'], refine_arg)
-                __upper_bound = np.percentile(__sta_pairs['vel'], 100 - refine_arg)
-                
-                __sta_pairs = __sta_pairs[(__sta_pairs['vel'] >= __lower_bound) & (__sta_pairs['vel'] <= __upper_bound)]
-
-            print("Discarded", __original_len - len(__sta_pairs), "velocity pairs with specified refine method")                
+        elif method == 'abs':
+            __lower_bound = np.percentile(__sta_pairs['vel'], arg)
+            __upper_bound = np.percentile(__sta_pairs['vel'], 100 - arg)
+            
+            __sta_pairs = __sta_pairs[(__sta_pairs['vel'] >= __lower_bound) & (__sta_pairs['vel'] <= __upper_bound)]
 
         else:
-            __sta_pairs_clean = __sta_pairs[['loc1','loc2','tt']].dropna(subset='tt')
+            raise ValueError("Supported methods of refine are 'abs' (absolute) or 'std' (standard deviation)")
 
-        self.station_pairs = __sta_pairs_clean
+        if verbose == True:
+            print("Discarded", __original_len - len(__sta_pairs), "velocity pairs with specified refine method (",__original_len , len(__sta_pairs),")")                
 
-    def remove_unused_stations(self):
+        __sta_pairs_clean = __sta_pairs.dropna(subset=['tt']).reset_index(drop=True)
 
-        __used_stations = list(pd.unique(self.station_pairs[['loc1', 'loc2']].values.ravel()))
+        self.station_pairs_complete = __sta_pairs_clean
 
-        __orig_stations = len(self.stations)
+        self.station_pairs = __sta_pairs_clean[['loc1','loc2','tt']]
 
-        self.stations = self.stations[self.stations.index.isin(__used_stations)]
-        self.stations.reset_index(drop=True, inplace=True)
-
-        print("Removed", __orig_stations - len(self.stations), "unused stations!")
-        print("If stations have been removed, call read_station_pairs again or indices will be wrong!")
+        self.refined = True
 
     def create_sources(self):
 
         __sources = self.stations[['lat','lon']]
-
-        self.station_count = int(len(__sources))
 
         __sources.to_csv(os.path.join(self.path,'sources.dat'), sep=r" ", header=None, index=False)
         
@@ -287,15 +339,24 @@ class fmst:
             file.writelines(lines)
 
     def create_otimes(self,
-                      unc: float=0.1):
+                      unc: float=0.1,
+                      write: bool=True,
+                      original: bool=False):
         
         __num_paths = self.station_count ** 2
 
         paths = [[0,0.,unc]] * __num_paths
-    
-        for _, row in self.station_pairs.iterrows():
-            idx = int(row['loc1'] * self.station_count + row['loc2'])
-            paths[idx] = [1,row['tt'],0.1]
+
+        if original:
+            for _, row in self.station_pairs_original[['loc1','loc2','tt']].iterrows():
+                idx = int(row['loc1'] * self.station_count + row['loc2'])
+                paths[idx] = [1,row['tt'],unc]
+        else:
+            for _, row in self.station_pairs.iterrows():
+                idx = int(row['loc1'] * self.station_count + row['loc2'])
+                paths[idx] = [1,row['tt'],unc]
+
+        self.otimes = paths
         
         with open(os.path.join(self.path, "otimes.dat"), "w") as file:
             for _ in paths:
@@ -337,7 +398,7 @@ class fmst:
                             "damping":float,                    [epsilon]
                             "subspace_dimension":int,            
                             "2nd_derivative_smoothing":int,     [0=no, 1=yes]
-                            "smoothing":int,                    [eta]
+                            "smoothing":float,                    [eta]
                             "latitude_account":int,             [0=no, 1=yes]
                             "frac_G_size": float
                              
@@ -361,13 +422,18 @@ class fmst:
                 file.write(ttomoss)
 
         if subinvss:
-            __params = {'damping':float, 'subspace_dimension':int, '2nd_derivative_smoothing':int,
-                       'smoothing':int, 'latitude_account':int, 'frac_G_size': float}
+            __params = {'damping':float, 
+                        'subspace_dimension':int, 
+                        '2nd_derivative_smoothing':int,
+                        'smoothing':float,
+                        'latitude_account':int, 
+                        'frac_G_size': float}
 
             fmstUtils.process_file(os.path.join(self.path, 'subinvss.in'), 11, __params, subinvss)
 
         if misfitss:
-            __params = {'dicing': (int, int), 'earth_radius':float}
+            __params = {'dicing': (int, int), 
+                        'earth_radius':float}
 
             fmstUtils.process_file(os.path.join(self.path, 'misfitss.in'), 6, __params, misfitss)
 
@@ -384,12 +450,25 @@ class fmst:
             fmstUtils.process_file(os.path.join(self.path, 'fm2dss.in'), 7, __params, fm2dss)
 
     def run_ttomoss(self,
-                   verbose: bool=False):
+                   verbose: bool=False,
+                   overwrite: bool=True):
 
         _ = subprocess.run('ttomoss', cwd=self.path, shell=True, check=True, capture_output=True, text=True)
 
         if verbose:
             print(_.stdout)
+
+        with open(os.path.join(self.path, 'residuals.dat'), 'r') as file:
+            lines = [[float(i) for i in line.split()] for line in file]
+
+        if overwrite:
+            self.residual_o = lines[0][0]
+            self.variance_o = lines[0][1]
+            self.residual_f = lines[-1][0]
+            self.variance_f = lines[-1][1]
+
+        else:
+            return([lines[0][0], lines[0][1], lines[-1][0], lines[-1][1]])
 
     def run_tslicess(self, verbose: bool=False):
 
@@ -402,7 +481,7 @@ class fmst:
         _ = subprocess.run('tslicess', cwd=os.path.join(self.path, 'gmtplot'), shell=True, check=True, capture_output=True, text=True)
 
         if verbose:
-            print(_.stdout)
+            print(_.stdout, _.stderr)
 
     def load_result_grid(self):
 
@@ -420,7 +499,7 @@ class fmst:
         self.z_values = pd.read_csv(os.path.join(self.path,'gmtplot','grid2dv.z'), header=None).values.flatten()
 
         if len(self.z_values) != len(x_coords) * len(y_coords):
-            raise ValueError(f"The number of Z values doesn't match the grid dimensions. {len(z_values)}, {len(x_coords) * len(y_coords)}")
+            raise ValueError(f"The number of Z values doesn't match the grid dimensions. {len(self.z_values)}, {len(x_coords) * len(y_coords)}")
         
         # Create a 2D grid for X, Y, and Z
         z_grid = self.z_values.reshape((len(x_coords), len(y_coords))).T
@@ -434,15 +513,18 @@ class fmst:
         self.xyz_data = xyz_data
         self.bounds = bounds
 
-    def map_tomo(self,
+    def plot_map(self,
                  nlevels: int=11,
                  cmap: str="SCM/vik",
                  reverse_cmap: bool=True,
                  projection: str='M15c',
+                 plot_tomo: bool=True,
                  plot_rays: bool=False,
+                 plot_rays_v: bool=False,
                  plot_stations: bool=False,
+                 label_stations: bool=False,
                  plot_caption: bool=False,
-                 save_fig: bool=False
+                 save_fig: str=None
                  ):
 
         gmt_region = [self.region[2], self.region[3], self.region[1], self.region[0]]
@@ -453,33 +535,33 @@ class fmst:
                                 registration="pixel")
         
         fig = pygmt.Figure()
+
+        if plot_tomo:
+            median_z = np.median(self.z_values)
+            max_z = np.max(self.z_values)
+            min_z = np.min(self.z_values)
+            z_disp = np.max([max_z-median_z, median_z-min_z])
         
-        median_z = np.median(self.z_values)
-        max_z = np.max(self.z_values)
-        min_z = np.min(self.z_values)
-        z_disp = np.max([max_z-median_z, median_z-min_z])
-    
-        min_val = median_z - z_disp
-        max_val = median_z + z_disp
-        increment = (max_val - min_val) / nlevels
-        
-        # Generate the CPT with series and 10 levels
-        cpt = pygmt.grd2cpt(
-            grid=orig_grid,
-            cmap=cmap,
-            reverse=reverse_cmap,
-            series=[min_val, max_val, increment]  # [min, max, increment]
-        )
-        
-        fig.grdimage(
-            grid=orig_grid,  # Input grid
-            region=gmt_region,
-            projection=projection,  # Mercator projection (6 inches wide)
-            cmap= cpt,           # f"{ttomoss_path}gmtplot/velgradabs1.cpt",  # Color palette
-            frame=True,  # Frame with ticks
-            interpolation="c",
-            dpi=150
-        )
+            min_val = median_z - z_disp
+            max_val = median_z + z_disp
+            increment = (max_val - min_val) / nlevels
+            
+            # Generate the CPT with series and 10 levels
+            cpt = pygmt.grd2cpt(
+                grid=orig_grid,
+                cmap=cmap,
+                reverse=reverse_cmap,
+                series=[min_val, max_val, increment]  # [min, max, increment]
+            )
+            
+            fig.grdimage(
+                grid=orig_grid,  # Input grid
+                region=gmt_region,
+                projection=projection,  # Mercator projection (6 inches wide)
+                cmap= cpt,           
+                interpolation="c",
+                dpi=150
+            )
 
         if plot_stations:
             receivers = pd.read_csv(os.path.join(self.path,'gmtplot','receivers.dat'), sep="\s+", header=None)
@@ -494,16 +576,26 @@ class fmst:
                 fill="white",
                 pen="black"
             )
+
+            if label_stations:
+                for _, station in self.stations.iterrows():  # Unpack the tuple
+                    fig.text(
+                        x=station.lon,  # Use attribute access instead of dict-style indexing
+                        y=station.lat,
+                        text=station.station,
+                        pen="0.25p,black,solid",
+                        fill="white",
+                        font="10p",
+                        offset="0.5/0.5"
+                    )
         
         # fig.basemap(region=region, projection="M6i", frame=["a10f5", "a10f5"])  # Frame with intervals
         fig.coast(
             shorelines=True,  # Draw coastlines
             borders=[1, 2],  # Show internal administrative boundaries and countries
-            resolution="f",   # Full resolution coastline
+            resolution="f",
+            frame=True
         )
-        
-        fig.colorbar(cmap=cpt,
-            frame=["x+lVelocity / km/s", "af"])
 
         if plot_rays:
             fig.plot(
@@ -513,6 +605,38 @@ class fmst:
                 pen="0.5p",               # Line width of 0.5 points (equivalent to -W0.5)
             )
 
+        if plot_rays_v:
+            # Ensure the 'vel' values are valid
+            vel_min = self.station_pairs_complete["vel"].min()
+            vel_max = self.station_pairs_complete["vel"].max()
+        
+            # Create a colormap based on the velocity range
+            pygmt.makecpt(cmap="SCM/batlow", series=[vel_min, vel_max])
+
+            # Define a function to compute the alpha transparency
+            def compute_alpha(vel, vel_min, vel_max):
+                # Calculate the distance from the middle of the range
+                mid_point = (vel_min + vel_max) / 2
+                alpha_value = 100 * (1 - abs(vel - mid_point) / mid_point)  # Alpha is higher for outliers
+                return np.clip(alpha_value, 20, 100)  # Clip to ensure alpha stays within bounds
+            
+            # Plot rays with colors based on 'vel' and 'alpha'
+            for _, row in self.station_pairs_complete.iterrows():
+                alpha = compute_alpha(row['vel'], vel_min, vel_max)
+                
+                fig.plot(
+                    x=[row["lon1"], row["lon2"]],
+                    y=[row["lat1"], row["lat2"]],
+                    pen=f"1p",
+                    zvalue=row['vel'],
+                    projection=projection,
+                    cmap=True,
+                    transparency=alpha  # Apply calculated alpha
+                )
+
+            fig.colorbar(cmap=True,
+                frame=["x+lVelocity / km/s", "af"])
+                
         if plot_caption:
             fig.text(
                 text=plot_caption,
@@ -522,10 +646,353 @@ class fmst:
                 font="15p",
                 offset="0.5/0.5"
             )
+
+        if plot_tomo:
+                            
+            fig.colorbar(cmap=cpt,
+                frame=["x+lVelocity / km/s", "af"])
         
         if save_fig:
-            fig.savefig(save_path, crop=True)
+            fig.savefig(save_fig, crop=True)
         
         fig.show()
 
+    def plot_hist(self,
+                  use_model: bool=False,
+                  mode: str='abs',
+                  xlim: float=3,
+                  save: str=None):
+
+        if use_model:
+            
+            with open(os.path.join(self.path, "rtravel.out"), "r") as file:
+                ftimes = [list(map(float, line.strip().split())) for line in file]
+
+        __num_paths = self.station_count ** 2
+
+        paths = [[0,0.]] * __num_paths
+
+        if self.refined:
+            for _, row in self.station_pairs_original.iterrows():
+                idx = int(row['loc1'] * self.station_count + row['loc2'])
+                paths[idx] = [1,row['gcm'] / self.initial_velocity]
+            alpha = 0.3
+        else:
+            for _, row in self.station_pairs_complete.iterrows():
+                idx = int(row['loc1'] * self.station_count + row['loc2'])
+                paths[idx] = [1,row['gcm'] / self.initial_velocity]
+
+            alpha = 0.8
         
+        itimes = paths           
+
+        old_otimes = self.otimes
+        self.create_otimes(write=False, original=self.refined)
+            
+        assert len(self.otimes) == len(itimes), "Mismatch in number of rows between otimes and itimes"
+        assert all(len(o) - 1 == len(i) for o, i in zip(self.otimes, itimes)), "Mismatch in row dimensions"
+        
+        # Remove the last value from each sublist in otimes
+        trimmed_otimes = [o[:-1] for o in self.otimes]
+        
+        if mode=="abs":
+            histbins = np.linspace(-xlim,xlim,60)
+            xlims = [-xlim,xlim]
+            label = "Residual Time / s"
+
+            # Perform element-wise subtraction
+            rtimes = [
+                [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                for otime_row, itime_row in zip(trimmed_otimes, itimes)
+            ]
+        else:
+            histbins = np.linspace(1-xlim,1+xlim,60)
+            xlims=[1-xlim,1+xlim]
+            label = "Residual %"
+        
+            rtimes = [
+                [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                for otime_row, itime_row in zip(trimmed_otimes, itimes)
+            ]
+        
+        # Extract the last value of each sublist, ignoring zeros
+        last_values = [row[-1] for row in rtimes if row[-1] != 0]
+        
+        # Plot the frequency distribution
+        plt.figure(figsize=(8, 6))
+        plt.hist(last_values, bins=histbins, color='C0', edgecolor='black', alpha=alpha, label="original")
+        plt.title("Travel Time Residuals")
+        plt.xlabel(label)
+        plt.ylabel("Frequency")
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.xlim(xlims)
+        
+        bottom_5 = np.percentile(last_values, 5)
+        top_5 = np.percentile(last_values, 95)
+        plt.axvline(bottom_5, color='red', linestyle='dashed', linewidth=2, label=f'Bottom 5% ({bottom_5:.2f})')
+        plt.axvline(top_5, color='green', linestyle='dashed', linewidth=2, label=f'Top 5% ({top_5:.2f})')
+        
+        mean = np.mean(last_values)
+        stdev = np.std(last_values)
+        plt.axvline(mean, color='grey', linestyle='dashed', linewidth=2, label=f'Mean')
+        plt.axvline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
+        plt.axvline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
+        
+        if self.refined:
+            paths = [[0,0.]] * __num_paths
+
+            for _, row in self.station_pairs_complete.iterrows():
+                idx = int(row['loc1'] * self.station_count + row['loc2'])
+                paths[idx] = [1,row['gcm'] / self.initial_velocity]
+            alpha = 0.8
+            
+            itimes = paths           
+
+            try:
+                assert self.otimes != None
+            except:
+                self.create_otimes(write=False)
+                
+            assert len(self.otimes) == len(itimes), "Mismatch in number of rows between otimes and itimes"
+            assert all(len(o) - 1 == len(i) for o, i in zip(self.otimes, itimes)), "Mismatch in row dimensions"
+            
+            # Remove the last value from each sublist in otimes
+            trimmed_otimes = [o[:-1] for o in self.otimes]
+            
+            if mode=="abs":
+                histbins = np.linspace(-xlim,xlim,60)
+                xlims = [-xlim,xlim]
+                label = "Residual Time / s"
+    
+                # Perform element-wise subtraction
+                rtimes = [
+                    [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                    for otime_row, itime_row in zip(trimmed_otimes, itimes)
+                ]
+            else:
+                histbins = np.linspace(1-xlim,1+xlim,60)
+                xlims=[1-xlim,1+xlim]
+                label = "Residual %"
+            
+                rtimes = [
+                    [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                    for otime_row, itime_row in zip(trimmed_otimes, itimes)
+                ]
+            
+            # Extract the last value of each sublist, ignoring zeros
+            last_values = [row[-1] for row in rtimes if row[-1] != 0]
+
+            plt.hist(last_values, bins=histbins, color='C0', edgecolor='black', alpha=alpha, label="refined")
+
+        if use_model:
+            if mode=="abs":
+                reltimes = [
+                    [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
+                    for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
+                ]
+            else:
+                reltimes = [
+                    [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
+                    for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
+                ]
+            
+            
+            assert(len(reltimes) == len(rtimes))
+            # Extract the last value of each sublist, ignoring zeros
+            last_values = [row[-1] for row in reltimes if row[-1] != 0]
+            
+            # Plot the frequency distribution
+            plt.hist(last_values, bins=histbins, color='pink', edgecolor='black', alpha=0.7, label="final model")
+            
+        plt.legend()
+        if save:
+            plt.savefig(save)
+        plt.show()
+
+        self.otimes = old_otimes
+
+    def lcurve(self,
+               factor: str='smoothing',
+               points: int=10,
+               sample_range: list=[0.01, 100],
+               iterations: int=3,
+               save: str=None):
+
+        if factor not in ['smoothing', 'damping']:
+            raise ValueError("factor must be one of 'smoothing' or 'damping'")
+
+        files_to_backup = ["frechet.out", "gridc.vtx", "itimes.dat", "raypath.out", "residuals.dat", "rtravel.out", "subinvss.in", "subiter.in", "ttomoss.in"]
+        temp_dir = fmstUtils.backup_files(files_to_backup)
+        
+        # Perform your operation here...
+
+        sample_space = [round(i, -int(np.floor(np.log10(abs(i))))) for i in np.logspace(np.log10(sample_range[0]), np.log10(sample_range[1]), points)]
+
+        lcurve_dict = {}
+
+        for s in tqdm(sample_space):
+            self.config_ttomoss(subinvss={factor:s}, ttomoss=str(iterations))
+            result_t = self.run_ttomoss(overwrite = False)
+
+            result_m = subprocess.run('misfitss', cwd=self.path, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+            # Check if the command executed successfully
+            if result_m.returncode == 0:
+                # Extracting the variance and roughness values using regular expressions
+                variance_pattern = r"2 is\s*([0-9.E+-]+)"
+                roughness_pattern = r"-1\) is\s*([0-9.E+-]+)$"
+                
+                # Extracting values from the output
+                variance = float(re.search(variance_pattern, result_m.stdout).group(1))
+                roughness = float(re.search(roughness_pattern, result_m.stdout).group(1))
+            else:
+                print(f"Error executing misfitss: {result.stderr}")
+
+            if factor == 'smoothing':
+                lcurve_dict[s] = [float(result_t[3]), roughness]
+                label_x = r"Model Roughness / (kms)$^{-1}$"
+
+            else:
+                lcurve_dict[s] = [float(result_t[3]), variance]
+                label_x = r"Model Variance / (km/s)$^2$"
+        
+        fmstUtils.restore_files(temp_dir, files_to_backup)
+        shutil.rmtree(temp_dir)  # Clean up the temporary directory
+
+        fig, ax = plt.subplots(ncols=2,figsize=(8,4))
+        
+        ax[0].scatter([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()])
+        ax[0].plot([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()], color='grey', zorder=-1, alpha=0.5)
+        for key, value in lcurve_dict.items():
+            ax[0].annotate(
+                round(key, 3),
+                (value[1] * 1.01, value[0] * 1.01),  # Manually offset the coordinates
+                bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3'),
+                ha='left', va='bottom'  # Justify bottom-left corner
+            )
+        
+        ax[0].set_ylabel(r"Data Variance / s$^2$")
+        ax[0].set_xlabel(label_x)
+
+        x_values = np.array([value[1] for value in lcurve_dict.values()])
+        y_values = np.array([value[0] for value in lcurve_dict.values()])
+        
+        # Compute first and second derivatives using finite differences
+        dx = np.gradient(x_values)
+        dy = np.gradient(y_values)
+        d2x = np.gradient(dx)
+        d2y = np.gradient(dy)
+        
+        # Compute curvature: κ = (x' y'' - y' x'') / (x'^2 + y'^2)^(3/2)
+        curvature = np.abs(dx * d2y - dy * d2x) / (dx**2 + dy**2) ** (3/2)
+        
+        # Plot curvature on ax[1]
+        ax[1].plot(x_values, curvature, marker='o', linestyle='-', color='blue')
+        ax[1].set_xlabel(label_x)
+        ax[1].set_ylabel("Curvature")
+        ax[1].set_yscale("log")
+
+        for i,(key, value) in enumerate(lcurve_dict.items()):
+            ax[1].annotate(
+                round(key, 3),
+                (value[1] * 1.01, curvature[i]*1.01), 
+                bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3'),
+                ha='left', va='bottom'  # Justify bottom-left corner
+            )
+        
+        plt.tight_layout()
+        if save:
+            plt.savefig(save)
+        plt.show()
+
+    def plot_vel_dots(self,
+                     use_model: bool=False,
+                     mode: str='abs'):
+            
+        if use_model:
+            
+            with open(os.path.join(self.path, "rtravel.out"), "r") as file:
+                ftimes = [list(map(float, line.strip().split())) for line in file]
+
+        __num_paths = self.station_count ** 2
+
+        itimes = [[0,0.]] * __num_paths
+
+        for _, row in self.station_pairs_complete.iterrows():
+            idx = int(row['loc1'] * self.station_count + row['loc2'])
+            itimes[idx] = [1,row['gcm'] / self.initial_velocity]
+
+        trimmed_otimes = [o[:-1] for o in self.otimes]
+        
+        if mode=="abs":
+            label = "Residual Time / s"
+
+            # Perform element-wise subtraction
+            rtimes = [
+                [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                for otime_row, itime_row in zip(trimmed_otimes, itimes)
+            ]
+            reltimes = [
+                [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
+                for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
+                ]
+        else:
+            label = "Residual %"
+        
+            rtimes = [
+                [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
+                for otime_row, itime_row in zip(trimmed_otimes, itimes)
+            ]
+            reltimes = [
+                [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
+                for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
+            ]
+
+        fig, ax = plt.subplots(figsize=(15,5))
+
+        last_values = [row[-1] for row in rtimes if row[-1] != 0]
+        ax.scatter(range(len(last_values)), last_values, color='grey', marker='x')
+
+        mean = np.mean(last_values)
+        stdev = np.std(last_values)
+        ax.axhline(mean, color='grey', linestyle='dashed', linewidth=2, label=f'Mean')
+        #ax.axhline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
+        #ax.axhline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
+        ax.fill_between([0,len(last_values)],[mean+2*stdev]*2,[mean-2*stdev]*2, color='grey', alpha=0.1)
+        ax.fill_between([0,len(last_values)],[mean+  stdev]*2,[mean-  stdev]*2, color='grey', alpha=0.3)
+
+        last_values_f = [row[-1] for row in reltimes if row[-1] != 0]
+        ax.scatter(range(len(last_values_f)), last_values_f, color='grey', marker='o')
+
+        for idx, val in enumerate(last_values):
+            if mode=='abs':
+                i = 0
+            else:
+                i = 1
+            
+            if abs(i - last_values[idx]) >= abs(i - last_values_f[idx]):
+                ax.plot([idx]*2,[last_values[idx],last_values_f[idx]],color="tab:blue")
+            else:
+                ax.plot([idx]*2,[last_values[idx],last_values_f[idx]],color="tab:red")
+
+        plt.show()
+
+    def plot_stations_vel(self):
+        
+        flipped_df = self.station_pairs_complete.rename(columns={'station1': 'station2', 'station2': 'station1'})
+
+        combined_df = pd.concat([self.station_pairs_complete, flipped_df], ignore_index=True)
+        
+        grouped = combined_df.groupby('station1')
+        
+        boxplot_data = [group['vel'].values for _, group in grouped]
+
+        # Plot boxplots
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.boxplot(boxplot_data, vert=True, patch_artist=True, labels=grouped.groups.keys())
+        ax.set_title('Boxplot of Velocities by Station')
+        ax.set_xlabel('Station')
+        ax.set_ylabel('Velocity')
+        plt.xticks(rotation=90)
+        
+        plt.show()
