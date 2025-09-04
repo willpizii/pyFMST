@@ -92,7 +92,12 @@ class fmst:
                     noise_std: float=0.8,
                     noise_seed: int=12324,
                     unc: bool=True,
-                    unc_mag: float=0.3):
+                    unc_mag: float=0.3,
+                    checkerboard: bool=False,
+                    checker_val: float=0.8,
+                    checker_size: int=2,
+                    checker_spacing: bool=True,
+                    spike: bool=False):
 
         """
         Configures grid for FMST to create using the builtin script grid2dss.
@@ -105,6 +110,11 @@ class fmst:
             noise_seed (int):   Seed for the random noise. If not set, defaults to 12324
             unc (bool):         Enables or disables a priori model covariance. Defaults to True
             unc_mag (float):    Elements of the covariance matrix. Defaults to 0.3
+            checkerboard (bool): Whether to apply a checkerboard to grid. Defaults to False
+            checker_val (float): Checkerboard perturbation. Defaults to 0.8
+            checker_size(int):  Size of checker cells, in grid cells. Defaults to 2
+            checker_spacing(bool): Whether to apply spacing between checkerboard cells. Defaults to True
+            spike (bool):       Whether to apply a spike test to the grid
         """
 
         if not self.initial_velocity:
@@ -144,6 +154,22 @@ class fmst:
 
         else:
             lines[24] = '0                     c: Add a priori model covariance (0=no,1=yes)?\n'
+
+        if checkerboard:
+            lines[29] = '1                     c: Add checkerboard (0=no,1=yes)\n'
+            lines[30] = f'{checker_val}                  c: Maximum perturbation of vertices\n'
+            lines[31] = f'{checker_size}                     c: Checkerboard size (NxN)\n'
+            if checker_spacing:
+                lines[32] = '1                     c: Use spacing (0=no,1=yes)\n'
+            else:
+                lines[32] = '0                     c: Use spacing (0=no,1=yes)\n'
+        else:
+            lines[29] = '0                     c: Add checkerboard (0=no,1=yes)\n'
+
+        if spike:
+            lines[36] = '1                     c: Apply spikes (0=no,1=yes)\n'
+        else:
+            lines[36] = '0                     c: Apply spikes (0=no,1=yes)\n'
 
         with open(self.__grid_path, 'w') as outfile:
             outfile.writelines(lines)
@@ -525,7 +551,7 @@ class fmst:
                  plot_rays_v: bool=False,
                  plot_stations: bool=False,
                  label_stations: bool=False,
-                 plot_caption: bool=False,
+                 plot_caption: str=None,
                  save_fig: str=None,
                  show: bool=True):
 
@@ -650,7 +676,6 @@ class fmst:
             )
 
         if plot_tomo:
-                            
             fig.colorbar(cmap=cpt,
                 frame=["x+lVelocity / km/s", "af"])
         

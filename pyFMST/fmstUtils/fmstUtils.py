@@ -35,22 +35,29 @@ def read_grid_file(file_path: str):
     with open(file_path, 'r') as infile:
         lines = infile.readlines()
 
-        dims = list(map(int, lines[0].split()))
-        rows, cols = dims[0] + 2, dims[1] + 2
+    dims = list(map(int, lines[0].split()))
+    rows, cols = dims[0] + 2, dims[1] + 2
 
-        lat_lon_basis = list(map(float, lines[1].split()))
-        grid_basis = {'latitude': lat_lon_basis[0], 'longitude': lat_lon_basis[1]}
+    lat_lon_basis = list(map(float, lines[1].split()))
+    grid_basis = {'latitude': lat_lon_basis[0], 'longitude': lat_lon_basis[1]}
 
-        grid_step = list(map(float, lines[2].split()))
+    grid_step = list(map(float, lines[2].split()))
 
-        data_lines = lines[3:]
-        for line in data_lines:
-            values = list(map(float, line.split()))
-            if values:
-                grid_data.append(values)
+    data_lines = lines[3:]
+    for line in data_lines:
+        values = list(map(float, line.split()))
+        if values:
+            grid_data.extend(values)
 
-    # Convert to the specified grid dimensions
-    grid_array = np.array(grid_data).reshape(rows, cols, 2)
+    total_vals = len(grid_data)
+    expected = rows * cols
+
+    if total_vals == expected:
+        grid_array = np.array(grid_data).reshape(rows, cols)
+    elif total_vals == expected * 2:
+        grid_array = np.array(grid_data).reshape(rows, cols, 2)
+    else:
+        raise ValueError(f"Unexpected number of values: {total_vals}, expected {expected} or {expected*2}")
 
     return grid_basis, grid_step, grid_array
 
