@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='pyFMST',
-    version='0.0.1',
+    version='0.0.2',
     description='Python translation layer for FMST functionality',
     author='Will Pizii',
     packages=find_packages(),

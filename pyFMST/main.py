@@ -232,6 +232,10 @@ class fmst:
                             velocity_pairs_path: str,
                             phase_vel: float):
 
+        """
+            Loads velocity pair .json file as created by PyPhasePick
+        """
+
         genUtils.check_file_exists(velocity_pairs_path)
 
         __ext = os.path.splitext(velocity_pairs_path)[-1]
@@ -426,7 +430,7 @@ class fmst:
                             "damping":float,                    [epsilon]
                             "subspace_dimension":int,
                             "2nd_derivative_smoothing":int,     [0=no, 1=yes]
-                            "smoothing":float,                    [eta]
+                            "smoothing":float,                  [eta]
                             "latitude_account":int,             [0=no, 1=yes]
                             "frac_G_size": float
 
@@ -852,8 +856,8 @@ class fmst:
             raise ValueError("factor must be one of 'smoothing' or 'damping'")
 
         files_to_backup = ["frechet.out", "gridc.vtx", "itimes.dat", "raypath.out", "residuals.dat", "rtravel.out", "subinvss.in", "subiter.in", "ttomoss.in"]
-        temp_dir = fmstUtils.backup_files(files_to_backup)
-        
+        file_paths = [os.path.join(self.path, f) for f in files_to_backup]
+        temp_dir = fmstUtils.backup_files(file_paths)
         # Perform your operation here...
 
         sample_space = [round(i, -int(np.floor(np.log10(abs(i))))) for i in np.logspace(np.log10(sample_range[0]), np.log10(sample_range[1]), points)]
@@ -880,55 +884,35 @@ class fmst:
 
             if factor == 'smoothing':
                 lcurve_dict[s] = [float(result_t[3]), roughness]
-                label_x = r"Model Roughness / (kms)$^{-1}$"
 
             else:
                 lcurve_dict[s] = [float(result_t[3]), variance]
-                label_x = r"Model Variance / (km/s)$^2$"
+
+        if factor == 'smoothing':
+            label_x = r"Model Roughness / (kms)$^{-1}$"
+
+        else:
+            label_x = r"Model Variance / (km/s)$^2$"
         
         fmstUtils.restore_files(temp_dir, files_to_backup)
         shutil.rmtree(temp_dir)  # Clean up the temporary directory
 
-        fig, ax = plt.subplots(ncols=2,figsize=(8,4))
+        fig, ax = plt.subplots(figsize=(5,5))
         
-        ax[0].scatter([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()])
-        ax[0].plot([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()], color='grey', zorder=-1, alpha=0.5)
+        ax.scatter([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()])
+        ax.plot([value[1] for value in lcurve_dict.values()],[value[0] for value in lcurve_dict.values()], color='grey', zorder=-1, alpha=0.5)
         for key, value in lcurve_dict.items():
-            ax[0].annotate(
+            ax.annotate(
                 round(key, 3),
                 (value[1] * 1.01, value[0] * 1.01),  # Manually offset the coordinates
                 bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3'),
                 ha='left', va='bottom'  # Justify bottom-left corner
             )
         
-        ax[0].set_ylabel(r"Data Variance / s$^2$")
-        ax[0].set_xlabel(label_x)
+        ax.set_ylabel(r"Data Variance / s$^2$")
+        ax.set_xlabel(label_x)
 
-        x_values = np.array([value[1] for value in lcurve_dict.values()])
-        y_values = np.array([value[0] for value in lcurve_dict.values()])
-        
-        # Compute first and second derivatives using finite differences
-        dx = np.gradient(x_values)
-        dy = np.gradient(y_values)
-        d2x = np.gradient(dx)
-        d2y = np.gradient(dy)
-        
-        # Compute curvature: κ = (x' y'' - y' x'') / (x'^2 + y'^2)^(3/2)
-        curvature = np.abs(dx * d2y - dy * d2x) / (dx**2 + dy**2) ** (3/2)
-        
-        # Plot curvature on ax[1]
-        ax[1].plot(x_values, curvature, marker='o', linestyle='-', color='blue')
-        ax[1].set_xlabel(label_x)
-        ax[1].set_ylabel("Curvature")
-        ax[1].set_yscale("log")
-
-        for i,(key, value) in enumerate(lcurve_dict.items()):
-            ax[1].annotate(
-                round(key, 3),
-                (value[1] * 1.01, curvature[i]*1.01), 
-                bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3'),
-                ha='left', va='bottom'  # Justify bottom-left corner
-            )
+        ax.set_title(f"Varying {factor}")
         
         plt.tight_layout()
         if save:
@@ -936,13 +920,26 @@ class fmst:
         plt.show()
 
     def plot_vel_dots(self,
-                     use_model: bool=False,
-                     mode: str='abs'):
+                     use_model: bool=True,
+                     mode: str='abs',
+                     std_dev: float=None):
+
+        """
+
+            Plots all velocity pairs as dots to show how the fit for each station pair changes between initial and final model
+
+            By default, use_model is set to True to use the output final times from FMST
+
+            Plots lines between final and initial time deviation, with blue colour indicating improvements and red regressions
+
+        """
             
-        if use_model:
-            
+        if use_model: 
             with open(os.path.join(self.path, "rtravel.out"), "r") as file:
                 ftimes = [list(map(float, line.strip().split())) for line in file]
+
+        else:
+            ftimes = None
 
         __num_paths = self.station_count ** 2
 
@@ -954,10 +951,9 @@ class fmst:
 
         trimmed_otimes = [o[:-1] for o in self.otimes]
         
-        if mode=="abs":
-            label = "Residual Time / s"
+        fig, ax = plt.subplots(figsize=(15,5))
 
-            # Perform element-wise subtraction
+        if mode=="abs":
             rtimes = [
                 [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
                 for otime_row, itime_row in zip(trimmed_otimes, itimes)
@@ -966,9 +962,10 @@ class fmst:
                 [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
                 for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
                 ]
-        else:
-            label = "Residual %"
-        
+
+            ax.set_ylabel("Residual time / s")
+
+        else:        
             rtimes = [
                 [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, itime_row)]
                 for otime_row, itime_row in zip(trimmed_otimes, itimes)
@@ -978,7 +975,7 @@ class fmst:
                 for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
             ]
 
-        fig, ax = plt.subplots(figsize=(15,5))
+            ax.set_ylabel("Residual / %")
 
         last_values = [row[-1] for row in rtimes if row[-1] != 0]
         ax.scatter(range(len(last_values)), last_values, color='grey', marker='x')
@@ -986,8 +983,9 @@ class fmst:
         mean = np.mean(last_values)
         stdev = np.std(last_values)
         ax.axhline(mean, color='grey', linestyle='dashed', linewidth=2, label=f'Mean')
-        #ax.axhline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
-        #ax.axhline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
+        if std_dev:    
+            ax.axhline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
+            ax.axhline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
         ax.fill_between([0,len(last_values)],[mean+2*stdev]*2,[mean-2*stdev]*2, color='grey', alpha=0.1)
         ax.fill_between([0,len(last_values)],[mean+  stdev]*2,[mean-  stdev]*2, color='grey', alpha=0.3)
 
