@@ -28,7 +28,7 @@ grid2dv.z                     c: GMT output file for velocity slice
 ccccccccccccccccccccccccccccccccccccccccccccccc
 c Traveltime grid parameters
 ccccccccccccccccccccccccccccccccccccccccccccccc
-1                             c: Plot traveltime slice? (0=no,1=yes)
+0                             c: Plot traveltime slice? (0=no,1=yes)
 grid2dt.z                     c: GMT output for traveltime slice
 ccccccccccccccccccccccccccccccccccccccccccccccc
 c Ray path parameters
