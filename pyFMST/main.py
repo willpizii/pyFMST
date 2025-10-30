@@ -858,7 +858,6 @@ class fmst:
         files_to_backup = ["frechet.out", "gridc.vtx", "itimes.dat", "raypath.out", "residuals.dat", "rtravel.out", "subinvss.in", "subiter.in", "ttomoss.in"]
         file_paths = [os.path.join(self.path, f) for f in files_to_backup]
         temp_dir = fmstUtils.backup_files(file_paths)
-        # Perform your operation here...
 
         sample_space = [round(i, -int(np.floor(np.log10(abs(i))))) for i in np.logspace(np.log10(sample_range[0]), np.log10(sample_range[1]), points)]
 
@@ -894,7 +893,7 @@ class fmst:
         else:
             label_x = r"Model Variance / (km/s)$^2$"
         
-        fmstUtils.restore_files(temp_dir, files_to_backup)
+        fmstUtils.restore_files(temp_dir, [os.path.join(self.path, f) for f in files_to_backup])
         shutil.rmtree(temp_dir)  # Clean up the temporary directory
 
         fig, ax = plt.subplots(figsize=(5,5))
