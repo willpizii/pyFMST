@@ -18,6 +18,7 @@ class fmst:
                  path: str,
                  templates: str,
                  env=None):
+        
         """
         Initiliazes the fmst class
 
@@ -56,6 +57,7 @@ class fmst:
             fmstUtils.create_file_from_template(self.__grid_path, self.templates_dir, 'grid2dss.in')
 
     def set_background_vel(self, v):
+
         """
         Sets background velocity for the input grid
 
@@ -63,6 +65,7 @@ class fmst:
             v : A float, list or nparray of velocities for background velocity to be set upon
                 If passed as a list or array, the mean value is taken
         """
+
         if isinstance(v, float):
             self.initial_velocity = v
         elif isinstance(v, list) or isinstance(v, np.ndarray):
@@ -176,6 +179,7 @@ class fmst:
 
     def create_grid(self,
                     copy_to_gridi: bool=True):
+        
         """
         Creates a grid using grid2dss. Optionally, disables copying to gridi for manual handling.
 
@@ -196,6 +200,7 @@ class fmst:
             shutil.copy(self.__grid_file_init, self.__gridi_file)
 
     def load_stations(self, station_path: str):
+
         """
         Loads stations for FMST from either an inventory xml or csv
 
@@ -206,6 +211,7 @@ class fmst:
         Parameters:
             station_path (str): Path to load
         """
+
         genUtils.check_file_exists(station_path)
 
         __ext = os.path.splitext(station_path)[-1]
@@ -236,6 +242,7 @@ class fmst:
                         'X': 'lon',
                         'altitude': 'elev'
                     })
+                    __stadf = __stadf[__sta_cols]
 
                 except:
                     raise ValueError("Could not read station csv - check column names!")
@@ -295,6 +302,7 @@ class fmst:
                            station_pairs_path: str,
                            drop: bool=False,
                            verbose: bool=False):
+        
         """
         Reads station pair file
         Optionally drops stations from self.stations which are not found in the paired list.
@@ -408,6 +416,7 @@ class fmst:
         self.refined = True
 
     def create_sources(self):
+
         """
         Creates sources.dat and receivers.dat required for FMST inversion
         Uses self.stations
@@ -439,6 +448,7 @@ class fmst:
                       unc: float=0.1,
                       write: bool=True,
                       original: bool=False):
+        
         """
         Creates otimes.dat as required for FMST inversion
 
@@ -558,6 +568,7 @@ class fmst:
     def run_ttomoss(self,
                    verbose: bool=False,
                    overwrite: bool=True):
+        
         """
         Runs the main inversion script ttomoss
 
@@ -599,6 +610,7 @@ class fmst:
             print(_.stdout, _.stderr)
 
     def load_result_grid(self):
+
         """
         Reads the result grid generated after running tslicess
         Handles cases of rounding error that can lead to misreading with wrong x,y dimensions
@@ -675,6 +687,7 @@ class fmst:
                  plot_caption: str=None,
                  save_fig: str=None,
                  show: bool=True):
+        
         """
         Plots the final tomographic model onto a map
 
@@ -985,6 +998,7 @@ class fmst:
                sample_range: list=[0.01, 100],
                iterations: int=3,
                save: str=None):
+        
         """
         Automatically performs l-curve analysis for a given inversion parameter and plots the result
 
