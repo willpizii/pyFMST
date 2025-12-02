@@ -69,7 +69,7 @@ def process_file(file_path, block_start, block_spec, update_params=None):
         file_path (str): Path to the file.
         block_spec (dict): Dictionary defining parameter names and their types.
                            Example: {"grid_dicing": (int, int), "earth_radius": float}.
-        block_start (int): The 0-indexed line number where the parameter block starts.
+        block_start (int): 0-indexed line number where the parameter block starts.
         update_params (dict): Dictionary of parameters to update, e.g., {"grid_dicing": (10, 10)}.
 
     Returns:
@@ -149,3 +149,26 @@ def restore_files(temp_dir, files):
         if os.path.exists(temp_file):
             shutil.copy2(temp_file, file)
 
+def gridc_to_gridi(path, unc:float):
+    unc = unc
+
+    with open(os.path.join(path, 'gridc.vtx')) as f:
+        lines = [x.rstrip() for x in f.readlines() if x.strip()]
+
+    nx, ny = lines[0].split()
+    lon, lat = lines[1].split()
+    dx, dy = lines[2].split()
+
+    vals = np.array([float(v) for v in lines[3:]])
+
+    with open(os.path.join(path, 'gridi.vtx'), "w") as f:
+        f.write(f"{int(nx):12d}{int(ny):12d}\n")
+        f.write(f"{float(lon):14.8f}{float(lat):14.8f}\n")
+        f.write(f"{float(dx):14.8f}{float(dy):14.8f}\n\n")
+
+        j=0
+        for v in vals:
+            f.write(f"{v:12.8f}  {unc:0.8f}\n")
+            j += 1
+            if j % (int(nx)+2) == 0 and j != 0:
+                f.write(f"\n")

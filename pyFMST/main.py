@@ -10,6 +10,7 @@ import shutil
 import json
 from tqdm import tqdm
 import re
+import warnings
 
 from .fmstUtils import fmstUtils, genUtils
 
@@ -89,8 +90,8 @@ class fmst:
         self.region = region
 
     def config_grid(self,
-                    latgrid: int,
-                    longrid: int,
+                    latgrid: int=None,
+                    longrid: int=None,
                     noise: bool=False,
                     noise_std: float=0.8,
                     noise_seed: int=12324,
@@ -122,25 +123,32 @@ class fmst:
 
         if not self.initial_velocity:
             raise RuntimeError("Background velocity must be set before creating a grid.")
+        
+        self.grid_unc = unc_mag
 
         with open(self.__grid_path, 'r') as infile:
             lines = infile.readlines()
 
         lines[14] = f'{round(self.initial_velocity, 3):<24} c: Background velocity\n'
 
-        lines[7] = f'{latgrid}                   c: Number of grid points in theta (N-S)\n'
-        lines[8] = f'{longrid}                   c: Number of grid points in phi (E-W)\n'
+        if latgrid and longrid:
+
+            lines[7] = f'{latgrid}                   c: Number of grid points in theta (N-S)\n'
+            lines[8] = f'{longrid}                   c: Number of grid points in phi (E-W)\n'
+
+        else:
+            warnings.warn("latgrid and longrid not defined; leaving unchanged...")
 
         lines[9] = f'{self.region[0]}  {self.region[1]}          c: N-S range of grid (degrees)\n'
         lines[10] = f'{self.region[2]}  {self.region[3]}          c: E-W range of grid (degrees)\n'
 
 
         if noise and not noise_std:
-            raise Warning("No amplitude passed for noise - defaulting to 0.8!")
+            warnings.warn("No amplitude passed for noise - defaulting to 0.8!")
 
 
         if noise and not noise_seed:
-            raise Warning("No seed passed for noise - defaulting to 12324!")
+            warnings.warn("No seed passed for noise - defaulting to 12324!")
 
 
         if noise:
@@ -380,7 +388,6 @@ class fmst:
             arg (float):    argument for the method
             verbose (bool): prints out the number of discarded velocity pairs, if True
         """
-
         
         if not self.refined:
             self.station_pairs_original = self.station_pairs_complete
@@ -401,8 +408,46 @@ class fmst:
             
             __sta_pairs = __sta_pairs[(__sta_pairs['vel'] >= __lower_bound) & (__sta_pairs['vel'] <= __upper_bound)]
 
+        elif method == 'fit':
+
+            with open(os.path.join(self.path, "rtravel.out"), "r") as file:
+                ftimes = [list(map(float, line.strip().split())) for line in file]
+
+            __num_paths = self.station_count ** 2
+
+            trimmed_otimes = [o[:-1] for o in self.otimes]
+
+            reltimes = [
+                [o / i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
+                for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
+            ]
+
+            collected_values = []
+
+            for _, row in self.station_pairs_complete.iterrows():
+                mat_idx = int(row['loc1'] * self.station_count + row['loc2'])
+                collected_values.append(reltimes[mat_idx][-1])
+
+            last_values_ordered = np.array(collected_values)
+
+            __std_fraction = np.std([ k for k in last_values_ordered if k != 0 ])
+            print(len([ k for k in last_values_ordered if k != 0 ]),
+                  len([ k for k in trimmed_otimes if k[0] != 0 ]),
+                      trimmed_otimes)
+
+            if verbose:
+                print('fit std:', __std_fraction)
+                print('fit mean:', np.mean([ k for k in last_values_ordered if k != 0 ]))
+
+            try:
+                __sta_pairs = __sta_pairs[(last_values_ordered >= 1 - arg * __std_fraction) & (last_values_ordered <= 1 + arg * __std_fraction)]
+
+            except ValueError as e:
+                print("'fit' refinement requires the inversion to have already been performed with the same data")
+                raise e
+
         else:
-            raise ValueError("Supported methods of refine are 'abs' (absolute) or 'std' (standard deviation)")
+            raise ValueError("Supported methods of refine are 'abs' (absolute), 'std' (standard deviation) or 'fit' (relative fit)")
 
         if verbose == True:
             print("Discarded", __original_len - len(__sta_pairs), "velocity pairs with specified refine method (",__original_len , len(__sta_pairs),")")                
@@ -494,7 +539,7 @@ class fmst:
 
         Args:
             init (bool): If True, creates configuration files from default templates.
-                         If False, will rewrite onto existing files
+                         If False, will rewrite onto existing files. Defaults to False
             fm2dss (dict): Parameters for the `fm2dss.in` file, must be passed in following format:
 
                             "grid_dicing": (int, int),
@@ -519,7 +564,7 @@ class fmst:
                             "frac_G_size": float
 
             subiter (int): Value to write to `subiter.in` file.
-            ttomoss (int): Value to write to `ttomoss.in` file.
+            ttomoss (int): Value to write to `ttomoss.in` file. If not set, defaults to 6
 
         """
 
@@ -531,11 +576,15 @@ class fmst:
 
         if subiter:
             with open(os.path.join(self.path, 'subiter.in'), 'w') as file:
-                file.write(subiter)
+                file.write(str(subiter))
 
         if ttomoss:
             with open(os.path.join(self.path, 'ttomoss.in'), 'w') as file:
-                file.write(ttomoss)
+                file.write(str(ttomoss))
+            self.iterations = ttomoss
+        else:
+            with open(os.path.join(self.path, 'ttomoss.in'), 'r') as file:
+                self.iterations = int(file.read().strip()[0])
 
         if subinvss:
             __params = {'damping':float, 
@@ -567,18 +616,20 @@ class fmst:
 
     def run_ttomoss(self,
                    verbose: bool=False,
-                   overwrite: bool=True):
+                   overwrite: bool=True,
+                   iterate_paths: bool=False,
+                   arg: float=2.0):
         
         """
         Runs the main inversion script ttomoss
 
         Parameters:
-            verbose (bool):     If True, prints all terminal output. Defaults to False
-            overwrite (bool):   If True: Overwrites self residuals and variance
-                                If False: Returns these instead in order:
-                                    Original residual, variance; Final residual, variance
+            verbose (bool):         If True, prints all terminal output. Defaults to False
+            overwrite (bool):       If True: Overwrites self residuals and variance
+                                    If False: Returns these instead in order:
+                                        Original residual, variance; Final residual, variance
         """
-
+            
         _ = subprocess.run('ttomoss', cwd=self.path, shell=True, check=True, capture_output=True, text=True, env=self.env)
 
         if verbose:
@@ -598,6 +649,13 @@ class fmst:
 
     def run_tslicess(self, verbose: bool=False):
 
+        """
+        Runs tslicess to produce an importable xyz layer
+
+        Parameters:
+            verbose(bool):  If True, prints out stdout and stderr. Defaults to False
+        """
+
         if not os.path.exists(os.path.join(self.path, 'gmtplot')):
             os.makedirs(os.path.join(self.path, 'gmtplot'))
 
@@ -613,7 +671,6 @@ class fmst:
 
         """
         Reads the result grid generated after running tslicess
-        Handles cases of rounding error that can lead to misreading with wrong x,y dimensions
         """
 
         # read boundaries file generated by tslicess
@@ -842,7 +899,8 @@ class fmst:
                   use_model: bool=False,
                   mode: str='abs',
                   xlim: float=3,
-                  save: str=None):
+                  save: str=None,
+                  stat_lines: bool=False):
 
         if use_model:
             
@@ -857,13 +915,11 @@ class fmst:
             for _, row in self.station_pairs_original.iterrows():
                 idx = int(row['loc1'] * self.station_count + row['loc2'])
                 paths[idx] = [1,row['gcm'] / self.initial_velocity]
-            alpha = 0.3
+
         else:
             for _, row in self.station_pairs_complete.iterrows():
                 idx = int(row['loc1'] * self.station_count + row['loc2'])
                 paths[idx] = [1,row['gcm'] / self.initial_velocity]
-
-            alpha = 0.8
         
         itimes = paths           
 
@@ -901,31 +957,31 @@ class fmst:
         
         # Plot the frequency distribution
         plt.figure(figsize=(8, 6))
-        plt.hist(last_values, bins=histbins, color='C0', edgecolor='black', alpha=alpha, label="original")
+        plt.hist(last_values, bins=histbins, histtype='step', color='C0', edgecolor='red', lw=1, ls='--', label="original")
         plt.title("Travel Time Residuals")
         plt.xlabel(label)
         plt.ylabel("Frequency")
         plt.grid(axis="y", linestyle="--", alpha=0.7)
         plt.xlim(xlims)
-        
-        bottom_5 = np.percentile(last_values, 5)
-        top_5 = np.percentile(last_values, 95)
-        plt.axvline(bottom_5, color='red', linestyle='dashed', linewidth=2, label=f'Bottom 5% ({bottom_5:.2f})')
-        plt.axvline(top_5, color='green', linestyle='dashed', linewidth=2, label=f'Top 5% ({top_5:.2f})')
-        
-        mean = np.mean(last_values)
-        stdev = np.std(last_values)
-        plt.axvline(mean, color='grey', linestyle='dashed', linewidth=2, label=f'Mean')
-        plt.axvline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
-        plt.axvline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
-        
+
+        if stat_lines:        
+            bottom_5 = np.percentile(last_values, 5)
+            top_5 = np.percentile(last_values, 95)
+            plt.axvline(bottom_5, color='red', linestyle='dashed', linewidth=2, label=f'Bottom 5% ({bottom_5:.2f})')
+            plt.axvline(top_5, color='green', linestyle='dashed', linewidth=2, label=f'Top 5% ({top_5:.2f})')
+            
+            mean = np.mean(last_values)
+            stdev = np.std(last_values)
+            plt.axvline(mean, color='grey', linestyle='dashed', linewidth=2, label=f'Mean')
+            plt.axvline(mean+2*stdev, color='black', linestyle='dashed', linewidth=2, label=f'2 StDev')
+            plt.axvline(mean-2*stdev, color='black', linestyle='dashed', linewidth=2)
+            
         if self.refined:
             paths = [[0,0.]] * __num_paths
 
             for _, row in self.station_pairs_complete.iterrows():
                 idx = int(row['loc1'] * self.station_count + row['loc2'])
                 paths[idx] = [1,row['gcm'] / self.initial_velocity]
-            alpha = 0.8
             
             itimes = paths           
 
@@ -963,7 +1019,7 @@ class fmst:
             # Extract the last value of each sublist, ignoring zeros
             last_values = [row[-1] for row in rtimes if row[-1] != 0]
 
-            plt.hist(last_values, bins=histbins, color='C0', edgecolor='black', alpha=alpha, label="refined")
+            plt.hist(last_values, bins=histbins, histtype='step', edgecolor='red', lw=1, ls="-", label="refined")
 
         if use_model:
             if mode=="abs":
@@ -977,13 +1033,12 @@ class fmst:
                     for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
                 ]
             
-            
             assert(len(reltimes) == len(rtimes))
             # Extract the last value of each sublist, ignoring zeros
             last_values = [row[-1] for row in reltimes if row[-1] != 0]
             
             # Plot the frequency distribution
-            plt.hist(last_values, bins=histbins, color='pink', edgecolor='black', alpha=0.7, label="final model")
+            plt.hist(last_values, bins=histbins, histtype='step', edgecolor='black', lw=1, ls="-", label="final model")
             
         plt.legend()
         if save:
@@ -997,6 +1052,7 @@ class fmst:
                points: int=10,
                sample_range: list=[0.01, 100],
                iterations: int=3,
+               logspace: bool=False,
                save: str=None):
         
         """
@@ -1046,10 +1102,10 @@ class fmst:
                 print(f"Error executing misfitss: {result_m.stderr}")
 
             if factor == 'smoothing':
-                lcurve_dict[s] = [float(result_t[2]), roughness]
+                lcurve_dict[s] = [float(result_t[3]), roughness]
 
             else:
-                lcurve_dict[s] = [float(result_t[2]), variance]
+                lcurve_dict[s] = [float(result_t[3]), variance]
 
         if factor == 'smoothing':
             label_x = r"model roughness / (kms)$^{-1}$"
@@ -1068,12 +1124,15 @@ class fmst:
         keys = [k for k, _ in pairs]
 
         fig, ax = plt.subplots()
-        ax.plot(x, y, marker="o")
+        if logspace:
+            ax.loglog(x, y, marker="o")
+        else:
+            ax.plot(x, y, marker="o")
 
         for i, key in enumerate(keys):
             ax.annotate(str(key), (x[i], y[i]), textcoords="offset points", xytext=(5,5))
 
-        ax.set(ylabel=r'traveltime misfit (s)$^2$', xlabel = label_x, 
+        ax.set(ylabel=r'data variance / s$^2$', xlabel = label_x, 
                title=fr'{factor} factor varied')
 
         if save:
@@ -1089,7 +1148,7 @@ class fmst:
 
             Plots all velocity pairs as dots to show how the fit for each station pair changes between initial and final model
 
-            By default, use_model is set to True to use the output final times from FMST
+            By default, use_model is set to True to use the output final times from FMST. If False, only original dots are plotted.
 
             Plots lines between final and initial time deviation, with blue colour indicating improvements and red regressions
 
@@ -1122,7 +1181,7 @@ class fmst:
             reltimes = [
                 [o - i if o != 0 and i != 0 else 0 for o, i in zip(otime_row, ftime_row)]
                 for otime_row, ftime_row in zip(trimmed_otimes, ftimes)
-                ]
+            ]
 
             ax.set_ylabel("Residual time / s")
 
@@ -1166,13 +1225,18 @@ class fmst:
 
         plt.show()
 
-    def plot_stations_vel(self):
-        
-        flipped_df = self.station_pairs_complete.rename(columns={'station1': 'station2', 'station2': 'station1'})
+    def plot_stations_vel(self, original:bool=False):
+            
+        if original and self.refined:
+            flipped_df = self.station_pairs_original.rename(columns={'station1': 'station2', 'station2': 'station1'})
+            combined_df = pd.concat([self.station_pairs_original, flipped_df], ignore_index=True)
+            grouped = combined_df.groupby('station1')
 
-        combined_df = pd.concat([self.station_pairs_complete, flipped_df], ignore_index=True)
-        
-        grouped = combined_df.groupby('station1')
+        else:
+            flipped_df = self.station_pairs_complete.rename(columns={'station1': 'station2', 'station2': 'station1'})
+            combined_df = pd.concat([self.station_pairs_complete, flipped_df], ignore_index=True)
+            grouped = combined_df.groupby('station1')
+            
         
         boxplot_data = [group['vel'].values for _, group in grouped]
 
@@ -1185,3 +1249,65 @@ class fmst:
         plt.xticks(rotation=90)
         
         plt.show()
+
+    def checkerboard_test(self, checker_size: int=3, checker_val: float=0.3,checker_spacing: bool=False,
+                           noise: float=None, noise_seed: int=12345, plot_input: bool=True, plot_output: bool=True):
+        
+        # copy out the existing output files before checkerboard test
+
+        if plot_output:
+
+            files_to_backup = ["frechet.out", "gridc.vtx", "itimes.dat", "raypath.out", "residuals.dat", "rtravel.out", "subinvss.in", "subiter.in", "ttomoss.in"]
+            file_paths = [os.path.join(self.path, f) for f in files_to_backup]
+            temp_dir = fmstUtils.backup_files(file_paths)
+
+        # perform checkerboard test using the same paths as already defined
+
+        self.config_grid(checkerboard=True, checker_size=checker_size,
+                          checker_val=checker_val, checker_spacing=checker_spacing)
+        
+        self.create_grid()
+
+        src = os.path.join(self.path, "gridi.vtx")
+        dst = os.path.join(self.path, "gridc.vtx")
+        shutil.copy(src, dst)
+
+        subprocess.run("fm2dss", cwd=self.path)
+
+        if plot_input:
+            self.run_tslicess()
+            self.load_result_grid()
+            self.plot_map(projection="M12c")
+
+        with open(os.path.join(self.path, "rtravel.out"), "r") as file:
+            lines = file.readlines()
+
+        if noise:
+            import random
+            random.seed(noise_seed)
+            new_lines = []
+            for line in lines:
+                parts = line.split()
+                t = float(parts[-1])
+                t = t + random.gauss(0.0, noise)
+                base = " ".join(parts[:-1])
+                new_lines.append(f"{base} {t:.6f}   {noise}\n")
+        else:
+            new_lines = [line.strip() + "   0.1\n" for line in lines]
+
+        with open(os.path.join(self.path, "otimes.dat"), "w") as file:
+            file.writelines(new_lines)
+
+        self.config_grid(checkerboard=False)
+        self.create_grid()
+
+        self.config_ttomoss(init=True)
+        self.run_ttomoss(overwrite=False)
+
+        if plot_output:
+            self.run_tslicess()
+            self.load_result_grid()
+            self.plot_map(projection="M12c")
+        
+            fmstUtils.restore_files(temp_dir, [os.path.join(self.path, f) for f in files_to_backup])
+            shutil.rmtree(temp_dir)  # clean up the temporary directory
