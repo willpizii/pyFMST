@@ -264,10 +264,13 @@ class fmst:
         __stadf = pd.DataFrame(rows, columns=__sta_cols)
         
         # Filter based on region
-        __stadf = __stadf[(__stadf['lon'] >= self.region[2]) & 
-                          (__stadf['lon'] <= self.region[3]) &
-                          (__stadf['lat'] >= self.region[1]) & 
-                          (__stadf['lat'] <= self.region[0])]
+        if self.region:
+            __stadf = __stadf[(__stadf['lon'] >= self.region[2]) & 
+                            (__stadf['lon'] <= self.region[3]) &
+                            (__stadf['lat'] >= self.region[1]) & 
+                            (__stadf['lat'] <= self.region[0])]
+        else:
+            print("Region not set - skipping station crop...")
         
         # Assign to self.stations after filtering
         self.stations = __stadf
@@ -276,7 +279,8 @@ class fmst:
 
     def load_velocity_pairs(self,
                             velocity_pairs_path: str,
-                            phase_vel: float):
+                            phase_vel: float,
+                            ignore_stations: list=None):
 
         """
         Loads velocity pair .json file as created by PyPhasePick
@@ -295,6 +299,16 @@ class fmst:
 
         with open(velocity_pairs_path, 'r') as file:
             data = json.load(file)
+
+        if ignore_stations:
+            def keep_key(key):
+                parts = key.split('_')
+                return not any(sta in parts for sta in ignore_stations)
+
+            data = {
+                k: v for k, v in data.items()
+                if keep_key(k)
+            }
 
         self.velocity_pairs = {}
 
@@ -793,7 +807,7 @@ class fmst:
             fig.grdimage(
                 grid=orig_grid,  # Input grid
                 region=gmt_region,
-                projection=projection,  # Mercator projection (6 inches wide)
+                projection=projection,
                 cmap= cpt,           
                 interpolation="c",
                 dpi=150
@@ -1263,7 +1277,9 @@ class fmst:
 
         # perform checkerboard test using the same paths as already defined
 
-        self.config_grid(checkerboard=True, checker_size=checker_size,
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            self.config_grid(checkerboard=True, checker_size=checker_size,
                           checker_val=checker_val, checker_spacing=checker_spacing)
         
         self.create_grid()
@@ -1298,7 +1314,10 @@ class fmst:
         with open(os.path.join(self.path, "otimes.dat"), "w") as file:
             file.writelines(new_lines)
 
-        self.config_grid(checkerboard=False)
+        
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            self.config_grid(checkerboard=False)
         self.create_grid()
 
         self.config_ttomoss(init=True)
